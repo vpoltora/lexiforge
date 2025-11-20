@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+.venv/
+venv/
+env/
+ENV/
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+
+# Anki Add-on Specific
+# Ignore config.json as it contains the API Key
+config.json
+# Ignore meta.json as it was used for backup/restore of sensitive data
+meta.json
+# Ignore packaged addon files
+*.ankiaddon
+# Ignore generated screenshots or recordings if any
+*.gif
+*.mp4
+*.webm
