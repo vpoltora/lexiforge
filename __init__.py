@@ -13,7 +13,7 @@ from anki.hooks import addHook
 # We need to handle imports carefully for Anki addons
 from . import ai_client
 from . import tts_client
-from . import utils
+from . import language_constants
 
 # Constants
 ADDON_NAME = "VocabAI"
@@ -72,11 +72,31 @@ class SettingsDialog(QDialog):
         model_layout.addWidget(self.load_models_btn)
         layout.addLayout(model_layout)
         
-        # Language Map (Simplified for now, just a label)
-        # layout.addWidget(QLabel("Deck Language Map (Edit in config.json for now)"))
-        # self.lang_map_info = QLabel(str(self.config.get("deck_language_map", {})))
-        # self.lang_map_info.setWordWrap(True)
-        # layout.addWidget(self.lang_map_info)
+        # Add separator
+        separator = QFrame()
+        separator.setFrameShape(QFrame.Shape.HLine)
+        separator.setFrameShadow(QFrame.Shadow.Sunken)
+        layout.addWidget(separator)
+        
+        # Source Language (language of the word being learned)
+        layout.addWidget(QLabel("Source Language (word language):"))
+        self.source_lang_combo = QComboBox()
+        self.source_lang_combo.addItems(language_constants.LANGUAGE_NAMES)
+        current_source = self.config.get("source_language", "English")
+        index = self.source_lang_combo.findText(current_source)
+        if index >= 0:
+            self.source_lang_combo.setCurrentIndex(index)
+        layout.addWidget(self.source_lang_combo)
+        
+        # Target Language (language for definitions and examples)
+        layout.addWidget(QLabel("Target Language (definitions/examples):"))
+        self.target_lang_combo = QComboBox()
+        self.target_lang_combo.addItems(language_constants.LANGUAGE_NAMES)
+        current_target = self.config.get("target_language", "English")
+        index = self.target_lang_combo.findText(current_target)
+        if index >= 0:
+            self.target_lang_combo.setCurrentIndex(index)
+        layout.addWidget(self.target_lang_combo)
         
         # Buttons
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
@@ -136,6 +156,8 @@ class SettingsDialog(QDialog):
         # Save config
         self.config["api_key"] = self.api_key_input.text()
         self.config["model"] = self.model_combo.currentText()
+        self.config["source_language"] = self.source_lang_combo.currentText()
+        self.config["target_language"] = self.target_lang_combo.currentText()
         save_config(self.config)
         super().accept()
 
@@ -177,21 +199,9 @@ def on_generate_click(editor):
         showInfo("Configuration not found. Please check config.json.")
         return
     
-    # Determine Language
-    deck_id = note.mid
-    # We need to find the deck name. Note.mid is actually model ID. 
-    # To get deck name we need the card, but in editor we might not have a card yet if it's a new note.
-    # However, editor.parentWindow is usually the AddCards dialog or Browser.
-    
-    # Best effort to get deck name
-    deck_name = ""
-    if hasattr(editor, 'parentWindow') and hasattr(editor.parentWindow, 'deckChooser'):
-        deck_name = editor.parentWindow.deckChooser.deckName()
-    
-    language = utils.parse_deck_language(deck_name, config.get("deck_language_map", {}))
-    
-    # Get Note Type
-    note_type = note.model()['name']
+    # Get languages from configuration
+    source_language = config.get("source_language", "English")
+    target_language = config.get("target_language", "English")
     
     # 3. Run in background to avoid freezing UI
     model = config.get("model", "gemini-flash-latest")
@@ -205,29 +215,30 @@ def on_generate_click(editor):
                 return {"error": "Please configure your API Key in Tools -> VocabAI Settings"}
                 
             print(f"VocabAI: Using model: {model}")
-            definition, examples, base_form = ai_client.generate_content(word, language, api_key, model)
+            print(f"VocabAI: Source language: {source_language}, Target language: {target_language}")
+            definition, examples, base_form = ai_client.generate_content(word, source_language, api_key, model, target_language)
             
             # Use base_form if available, otherwise fallback to original word
             target_word = base_form if base_form else word
             
-            # Call TTS
+            # Call TTS - use source language for pronunciation
             # Generate a unique filename with language code to avoid caching and ambiguity
             safe_word = "".join([c for c in target_word if c.isalnum() or c in (' ', '-', '_')]).strip()
-            lang_code = tts_client.get_lang_code(language)
+            lang_code = tts_client.get_lang_code(source_language)
             filename = f"vocabai_{safe_word}_{lang_code}_{int(time.time())}.mp3"
             
             media_dir = mw.col.media.dir()
             full_path = os.path.join(media_dir, filename)
             
-            success = tts_client.download_audio(target_word, language, full_path)
+            success = tts_client.download_audio(target_word, source_language, full_path)
             
             return {
                 "definition": definition,
                 "examples": examples,
                 "base_form": base_form,
                 "audio_file": filename if success else None,
-                "detected_lang": language,
-                "detected_deck": deck_name
+                "source_language": source_language,
+                "target_language": target_language
             }
         except Exception as e:
             return {"error": str(e)}

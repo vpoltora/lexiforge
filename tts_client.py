@@ -2,24 +2,35 @@ import urllib.request
 import urllib.parse
 import os
 
-def get_lang_code(language):
-    lang_map = {
-        "russian": "ru",
-        "english": "en",
-        "spanish": "es",
-        "french": "fr",
-        "german": "de",
-        "italian": "it",
-        "portuguese": "pt-BR", # Default to Brazilian Portuguese for better quality
-        "brazilian portuguese": "pt-BR",
-        "chinese": "zh-CN",
-        "japanese": "ja",
-        "korean": "ko"
-    }
-    return lang_map.get(language.lower(), "en")
+# Import language constants
+from . import language_constants
 
-def download_audio(text, language, output_path):
-    lang_code = get_lang_code(language)
+def get_lang_code(language_name):
+    """
+    Get the ISO language code for a given language name.
+    Uses the centralized SUPPORTED_LANGUAGES dictionary.
+    
+    Args:
+        language_name: Display name of the language (e.g., "English")
+    
+    Returns:
+        ISO language code (e.g., "en"), defaults to "en" if not found
+    """
+    return language_constants.get_lang_code(language_name)
+
+def download_audio(text, language_name, output_path):
+    """
+    Download TTS audio from Google Translate for the given text.
+    
+    Args:
+        text: Text to convert to speech
+        language_name: Display name of the language (e.g., "English")
+        output_path: Path where the audio file will be saved
+    
+    Returns:
+        True if successful, False otherwise
+    """
+    lang_code = get_lang_code(language_name)
     
     # Google TTS API (unofficial)
     base_url = "https://translate.google.com/translate_tts"
@@ -44,7 +55,9 @@ def download_audio(text, language, output_path):
         with open(output_path, "wb") as f:
             f.write(data)
             
+        print(f"VocabAI: TTS audio downloaded successfully for '{text}' in {language_name} ({lang_code})")
         return True
     except Exception as e:
-        print(f"Error downloading audio: {e}")
+        print(f"VocabAI: Error downloading audio for {language_name} ({lang_code}): {e}")
         return False
+

@@ -45,3 +45,5 @@ meta.json
 *.gif
 *.mp4
 *.webm
+
+test_audio_samples/

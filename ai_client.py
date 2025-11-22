@@ -4,25 +4,38 @@ import re
 
 DEFAULT_MODEL = "gemini-flash-latest"
 
-def generate_content(word, language, api_key, model=DEFAULT_MODEL):
+def generate_content(word, source_language, api_key, model=DEFAULT_MODEL, target_language="English"):
+    """
+    Generate word definition and example using Gemini API.
+    
+    Args:
+        word: The word to analyze
+        source_language: Language of the word (e.g., "Spanish")
+        api_key: Gemini API key
+        model: Model to use (default: gemini-flash-latest)
+        target_language: Language for definition and example (default: "English")
+    
+    Returns:
+        Tuple of (definition, example, base_form)
+    """
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
     
     prompt = f"""
-    Analyze the word '{word}' in {language}.
+    Analyze the word '{word}' in {source_language}.
     
     1. Identify the BASE FORM (lemma) of the word.
-    2. Translate the BASE FORM to English.
+    2. Translate the BASE FORM to {target_language}.
     
     Rules for the DEFINITION:
-    1. If the base form is a simple, common word (like 'cat', 'milk', 'run'), provide ONLY the direct one-word translation.
-    2. If it is complex, abstract, or ambiguous, provide the translation followed by a very short definition (4-7 words) in parentheses.
+    1. If the base form is a simple, common word (like 'cat', 'milk', 'run'), provide ONLY the direct one-word translation in {target_language}.
+    2. If it is complex, abstract, or ambiguous, provide the translation in {target_language} followed by a very short definition (4-7 words) in parentheses.
     
-    3. Provide 1 example sentence in {language} using the BASE FORM.
+    3. Provide 1 example sentence in {target_language} using the translated word.
     
     Format the output exactly like this:
-    BASE_FORM: [The base form of the word]
-    DEFINITION: [English translation/definition of the base form]
-    EXAMPLE: [Sentence in {language} using the base form]
+    BASE_FORM: [The base form of the word in {source_language}]
+    DEFINITION: [Translation/definition in {target_language}]
+    EXAMPLE: [Sentence in {target_language} using the translated word]
     
     Do not use markdown formatting.
     """
