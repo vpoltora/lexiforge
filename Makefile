@@ -1,54 +1,31 @@
-# Makefile for VocabAI
-
-# Define virtual environment path
-VENV := .venv
-PYTHON := $(VENV)/bin/python
-PIP := $(VENV)/bin/pip
-FLAKE8 := $(VENV)/bin/flake8
+.PHONY: test-popular test-full clean dev
 
 # Anki addons directory
-ANKI_ADDONS := $(HOME)/Library/Application Support/Anki2/addons21/vocabai
+ANKI_ADDONS_DIR = $(HOME)/Library/Application Support/Anki2/addons21/vocabai
 
-.PHONY: all lint clean package dev
+# Files to sync to Anki plugin directory (all git-tracked files except tests and Makefile)
+PLUGIN_FILES = $(shell git ls-files | grep -v '^tests/' | grep -v '^Makefile$$' | grep -v '^\.gitignore$$')
 
-# Default target
-all: lint
-
-# Create virtual environment and install dependencies
-$(VENV):
-	python3 -m venv $(VENV)
-	$(PIP) install --upgrade pip
-	$(PIP) install flake8
-
-# Run linter (depends on venv)
-lint: $(VENV)
-	$(FLAKE8) . --exclude=.venv --count --select=E9,F63,F7,F82 --show-source --statistics
-	$(FLAKE8) . --exclude=.venv --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
-
-# Clean up
-clean:
-	rm -rf $(VENV)
-	rm -rf __pycache__
-	rm -f *.pyc
-	rm -f .DS_Store
-	rm -f *.zip
-
-# Sync to Anki for development (excludes dev files)
 dev:
-	@echo "Syncing VocabAI to Anki..."
-	@mkdir -p "$(ANKI_ADDONS)"
-	@rsync -av --delete \
-		--exclude='.venv/' \
-		--exclude='__pycache__/' \
-		--exclude='*.pyc' \
-		--exclude='.DS_Store' \
-		--exclude='Makefile' \
-		--exclude='create_icon.py' \
-		--exclude='*.zip' \
-		./ "$(ANKI_ADDONS)/"
-	@echo "✅ VocabAI synced to $(ANKI_ADDONS)"
-	@echo "⚠️  Restart Anki to reload changes."
+	@echo "Syncing plugin files to Anki..."
+	@mkdir -p "$(ANKI_ADDONS_DIR)"
+	@echo "  Cleaning old files (preserving config.json)..."
+	@find "$(ANKI_ADDONS_DIR)" -type f ! -name "config.json" -delete
+	@find "$(ANKI_ADDONS_DIR)" -type d -empty -delete
+	@for file in $(PLUGIN_FILES); do \
+		echo "  Copying $$file"; \
+		cp -f $$file "$(ANKI_ADDONS_DIR)/"; \
+	done
+	@echo "✓ Plugin files synced successfully!"
+	@echo "  Restart Anki to load changes"
 
-# Package the addon
-package: clean
-	zip -r vocabai.zip . -x "*.git*" -x "Makefile" -x "*.zip" -x "tests/*" -x ".venv/*"
+
+test-popular:
+	python3 -m unittest tests/test_popular.py
+
+test-full:
+	python3 -m unittest tests/test_popular.py tests/test_full.py
+
+clean:
+	rm -f test_audio_samples/*.mp3
+	rm -rf tests/__pycache__

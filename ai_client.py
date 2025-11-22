@@ -4,41 +4,59 @@ import re
 
 DEFAULT_MODEL = "gemini-flash-latest"
 
-def generate_content(word, source_language, api_key, model=DEFAULT_MODEL, target_language="English"):
+def get_default_prompt_template():
+    """Returns the default prompt template with variable placeholders."""
+    return """Analyze the word '{{word}}' in {{source_lang}}.
+
+1. Identify the BASE FORM (lemma) of the word.
+2. Translate the BASE FORM to {{definition_lang}}.
+
+Rules for the DEFINITION:
+1. If the base form is a simple, common word (like 'cat', 'milk', 'run'), provide ONLY the direct one-word translation in {{definition_lang}}.
+2. If it is complex, abstract, or ambiguous, provide the translation in {{definition_lang}} followed by a very short definition (4-7 words) in parentheses.
+
+3. Provide 1 example sentence in {{source_lang}} using the word (or its base form).
+
+Format the output exactly like this:
+BASE_FORM: [The base form of the word in {{source_lang}}]
+DEFINITION: [Translation/definition in {{definition_lang}}]
+EXAMPLE: [Sentence in {{source_lang}} using the word]
+
+Do not use markdown formatting."""
+
+def generate_content(word, source_lang, api_key, model=DEFAULT_MODEL, definition_lang="English", prompt_template=None):
     """
     Generate word definition and example using Gemini API.
     
     Args:
         word: The word to analyze
-        source_language: Language of the word (e.g., "Spanish")
+        source_lang: Language of the word or "Auto" for auto-detection
         api_key: Gemini API key
         model: Model to use (default: gemini-flash-latest)
-        target_language: Language for definition and example (default: "English")
+        definition_lang: Language for definition (default: "English")
+        prompt_template: Custom prompt template (uses default if None)
     
     Returns:
         Tuple of (definition, example, base_form)
     """
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
     
-    prompt = f"""
-    Analyze the word '{word}' in {source_language}.
+    if prompt_template is None:
+        prompt_template = get_default_prompt_template()
     
-    1. Identify the BASE FORM (lemma) of the word.
-    2. Translate the BASE FORM to {target_language}.
+    # Handle Auto language detection
+    actual_source = source_lang
+    if source_lang.lower() == "auto":
+        # Modify prompt to detect language first
+        prompt_template = f"""First, detect the language of the word '{{{{word}}}}' and use that language as {{{{source_lang}}}}.
+
+{prompt_template}"""
+        actual_source = "the detected language"
     
-    Rules for the DEFINITION:
-    1. If the base form is a simple, common word (like 'cat', 'milk', 'run'), provide ONLY the direct one-word translation in {target_language}.
-    2. If it is complex, abstract, or ambiguous, provide the translation in {target_language} followed by a very short definition (4-7 words) in parentheses.
-    
-    3. Provide 1 example sentence in {target_language} using the translated word.
-    
-    Format the output exactly like this:
-    BASE_FORM: [The base form of the word in {source_language}]
-    DEFINITION: [Translation/definition in {target_language}]
-    EXAMPLE: [Sentence in {target_language} using the translated word]
-    
-    Do not use markdown formatting.
-    """
+    # Replace template variables
+    prompt = prompt_template.replace("{{word}}", word)
+    prompt = prompt.replace("{{source_lang}}", actual_source)
+    prompt = prompt.replace("{{definition_lang}}", definition_lang)
     
     data = {
         "contents": [{
@@ -84,15 +102,14 @@ def parse_response(text):
     # Remove any markdown formatting if present
     text = text.replace("**", "").replace("*", "")
     
-    lines = text.strip().split('\n')
-    for line in lines:
-        line = line.strip()
-        if line.upper().startswith("BASE_FORM:"):
-            base_form = line[10:].strip()
-        elif line.upper().startswith("DEFINITION:"):
-            definition = line[11:].strip()
-        elif line.upper().startswith("EXAMPLE:"):
-            example = line[8:].strip()
+    # Use regex for more robust parsing
+    base_form_match = re.search(r"BASE_FORM:\s*(.+)", text, re.IGNORECASE)
+    definition_match = re.search(r"DEFINITION:\s*(.+)", text, re.IGNORECASE)
+    example_match = re.search(r"EXAMPLE:\s*(.+)", text, re.IGNORECASE)
+    
+    base_form = base_form_match.group(1).strip() if base_form_match else ""
+    definition = definition_match.group(1).strip() if definition_match else ""
+    example = example_match.group(1).strip() if example_match else ""
             
     return definition, example, base_form
 

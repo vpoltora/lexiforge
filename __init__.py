@@ -2,11 +2,14 @@ import json
 import os
 import time
 
-
 # Anki imports
 from aqt import mw
-from aqt.utils import showInfo, tooltip
-from aqt.qt import *
+from aqt.utils import showInfo
+from aqt.qt import (
+    QDialog, QVBoxLayout, QLabel, QLineEdit, QHBoxLayout,
+    QComboBox, QPushButton, QFrame, QDialogButtonBox, QAction,
+    Qt, QTextEdit
+)
 from anki.hooks import addHook
 
 # Local imports
@@ -36,10 +39,19 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("VocabAI Settings")
         # Make sure the dialog appears on top
-        from aqt.qt import Qt
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
         self.config = get_config() or {}
+        self.all_field_names = self.get_all_field_names()
         self.setup_ui()
+
+    def get_all_field_names(self):
+        if not mw.col:
+            return []
+        fields = set()
+        for model in mw.col.models.all():
+            for fld in model['flds']:
+                fields.add(fld['name'])
+        return sorted(list(fields))
 
     def setup_ui(self):
         layout = QVBoxLayout()
@@ -60,7 +72,7 @@ class SettingsDialog(QDialog):
         layout.addWidget(QLabel("Model:"))
         model_layout = QHBoxLayout()
         self.model_combo = QComboBox()
-        self.model_combo.setEditable(True) # Allow custom models
+        self.model_combo.setEditable(True)  # Allow custom models
         current_model = self.config.get("model", "gemini-flash-latest")
         self.model_combo.addItem(current_model)
         self.model_combo.setCurrentText(current_model)
@@ -78,28 +90,100 @@ class SettingsDialog(QDialog):
         separator.setFrameShadow(QFrame.Shadow.Sunken)
         layout.addWidget(separator)
         
+        
         # Source Language (language of the word being learned)
         layout.addWidget(QLabel("Source Language (word language):"))
         self.source_lang_combo = QComboBox()
-        self.source_lang_combo.addItems(language_constants.LANGUAGE_NAMES)
-        current_source = self.config.get("source_language", "English")
+        # Add "Auto" as first option
+        languages = ["Auto"] + language_constants.LANGUAGE_NAMES
+        self.source_lang_combo.addItems(languages)
+        current_source = self.config.get("source_lang", "Auto")
         index = self.source_lang_combo.findText(current_source)
         if index >= 0:
             self.source_lang_combo.setCurrentIndex(index)
         layout.addWidget(self.source_lang_combo)
         
-        # Target Language (language for definitions and examples)
-        layout.addWidget(QLabel("Target Language (definitions/examples):"))
-        self.target_lang_combo = QComboBox()
-        self.target_lang_combo.addItems(language_constants.LANGUAGE_NAMES)
-        current_target = self.config.get("target_language", "English")
-        index = self.target_lang_combo.findText(current_target)
+        # Definition Language (language for definitions)
+        layout.addWidget(QLabel("Definition Language (definitions):"))
+        self.def_lang_combo = QComboBox()
+        self.def_lang_combo.addItems(language_constants.LANGUAGE_NAMES)
+        current_def = self.config.get("definition_lang", "English")
+        index = self.def_lang_combo.findText(current_def)
         if index >= 0:
-            self.target_lang_combo.setCurrentIndex(index)
-        layout.addWidget(self.target_lang_combo)
+            self.def_lang_combo.setCurrentIndex(index)
+        layout.addWidget(self.def_lang_combo)
+        
+        # Separator
+        separator2 = QFrame()
+        separator2.setFrameShape(QFrame.Shape.HLine)
+        separator2.setFrameShadow(QFrame.Shadow.Sunken)
+        layout.addWidget(separator2)
+        
+        # Prompt Editor
+        layout.addWidget(QLabel("Prompt Template (Advanced):"))
+        self.prompt_editor = QTextEdit()
+        self.prompt_editor.setMaximumHeight(120)
+        self.prompt_editor.setPlaceholderText("Variables: {{word}}, {{source_lang}}, {{definition_lang}}")
+        default_prompt = ai_client.get_default_prompt_template()
+        current_prompt = self.config.get("prompt_template", "") or default_prompt
+        self.prompt_editor.setPlainText(current_prompt)
+        layout.addWidget(self.prompt_editor)
+        
+        # Reset button
+        reset_btn = QPushButton("Reset to Default Prompt")
+        reset_btn.clicked.connect(lambda: self.prompt_editor.setPlainText(ai_client.get_default_prompt_template()))
+        layout.addWidget(reset_btn)
+        
+        # Separator
+        separator3 = QFrame()
+        separator3.setFrameShape(QFrame.Shape.HLine)
+        separator3.setFrameShadow(QFrame.Shadow.Sunken)
+        layout.addWidget(separator3)
+        
+        # Field Mapping
+        layout.addWidget(QLabel("Field Mapping:"))
+        
+        field_mapping = self.config.get("field_mapping", {})
+
+        # Word field
+        word_layout = QHBoxLayout()
+        word_layout.addWidget(QLabel("Word (base form):"))
+        self.word_field_input = QComboBox()
+        self.word_field_input.setEditable(True)
+        self.word_field_input.addItems(self.all_field_names)
+        self.word_field_input.setCurrentText(field_mapping.get("word_field", "Front"))
+        word_layout.addWidget(self.word_field_input)
+        layout.addLayout(word_layout)
+        
+        # Definition field
+        def_field_layout = QHBoxLayout()
+        def_field_layout.addWidget(QLabel("Definition:"))
+        self.def_field_input = QComboBox()
+        self.def_field_input.setEditable(True)
+        self.def_field_input.addItems(self.all_field_names)
+        self.def_field_input.setCurrentText(field_mapping.get("definition_field", "Back"))
+        def_field_layout.addWidget(self.def_field_input)
+        layout.addLayout(def_field_layout)
+        
+        # Example field
+        ex_field_layout = QHBoxLayout()
+        ex_field_layout.addWidget(QLabel("Example:"))
+        self.ex_field_input = QComboBox()
+        self.ex_field_input.setEditable(True)
+        self.ex_field_input.addItems(self.all_field_names)
+        self.ex_field_input.setCurrentText(field_mapping.get("example_field", "Back"))
+        ex_field_layout.addWidget(self.ex_field_input)
+        layout.addLayout(ex_field_layout)
+        
+        # Help text
+        help_label = QLabel("💡 If Definition and Example use the same field, they will be combined.")
+        help_label.setStyleSheet("color: gray; font-size: 11px;")
+        layout.addWidget(help_label)
         
         # Buttons
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -122,7 +206,7 @@ class SettingsDialog(QDialog):
             
             # Filter and sort models
             # We want to show popular/free models first
-            
+
             # Sort by name to have some order
             models.sort(key=lambda x: x['name'])
             
@@ -143,7 +227,7 @@ class SettingsDialog(QDialog):
             else:
                 self.model_combo.addItem(current)
                 self.model_combo.setCurrentText(current)
-                
+
             showInfo("Models loaded successfully!")
             
         except Exception as e:
@@ -156,8 +240,14 @@ class SettingsDialog(QDialog):
         # Save config
         self.config["api_key"] = self.api_key_input.text()
         self.config["model"] = self.model_combo.currentText()
-        self.config["source_language"] = self.source_lang_combo.currentText()
-        self.config["target_language"] = self.target_lang_combo.currentText()
+        self.config["source_lang"] = self.source_lang_combo.currentText()
+        self.config["definition_lang"] = self.def_lang_combo.currentText()
+        self.config["prompt_template"] = self.prompt_editor.toPlainText()
+        self.config["field_mapping"] = {
+            "word_field": self.word_field_input.currentText() or "Front",
+            "definition_field": self.def_field_input.currentText() or "Back",
+            "example_field": self.ex_field_input.currentText() or "Back"
+        }
         save_config(self.config)
         super().accept()
 
@@ -165,6 +255,25 @@ def open_settings():
     """Open settings dialog"""
     dialog = SettingsDialog(mw)
     dialog.exec()
+
+def get_field_mapping(note, config):
+    """
+    Determine the field mapping based on note type and configuration.
+    Returns (word_field, def_field, ex_field)
+    """
+    fields = note.keys()
+    
+    # If exactly 2 fields, automatically map to 1st and 2nd field
+    if len(fields) == 2:
+        return fields[0], fields[1], fields[1]
+
+    # Otherwise use configuration (defaulting to Front/Back)
+    field_mapping = config.get("field_mapping", {})
+    word_field = field_mapping.get("word_field", "Front")
+    def_field = field_mapping.get("definition_field", "Back")
+    ex_field = field_mapping.get("example_field", "Back")
+
+    return word_field, def_field, ex_field
 
 def on_generate_click(editor):
     """
@@ -176,33 +285,42 @@ def on_generate_click(editor):
     if not note:
         showInfo("Please select a note.")
         return
-        
-    if "Front" not in note or "Back" not in note:
-        # Check if fields exist, if not try to find similar ones or warn
-        missing = []
-        for f in ["Front", "Back", "Example"]:
-            if f not in note:
-                missing.append(f)
-        
-        if missing:
-            showInfo(f"Error: The following fields are missing in this note type: {', '.join(missing)}")
-            return
 
-    word = note["Front"]
-    if not word:
-        showInfo("Please enter a word in the 'Front' field.")
-        return
-
-    # 2. Get Configuration
+    # Get Configuration
     config = get_config()
     if not config:
         showInfo("Configuration not found. Please check config.json.")
         return
-    
+
+    # Determine fields
+    word_field, def_field, ex_field = get_field_mapping(note, config)
+
+    # Check if required fields exist
+    missing = []
+    if word_field not in note:
+        missing.append(word_field)
+    if def_field not in note:
+        missing.append(def_field)
+    # ex_field might be same as def_field, check if it's different and missing
+    if ex_field != def_field and ex_field not in note:
+        missing.append(ex_field)
+
+    if missing:
+        showInfo(
+            f"Error: The following fields are missing in this note type: {', '.join(missing)}\n\n"
+            f"Detected fields: {', '.join(note.keys())}"
+        )
+        return
+
+    word = note[word_field]
+    if not word:
+        showInfo(f"Please enter a word in the '{word_field}' field.")
+        return
+
     # Get languages from configuration
-    source_language = config.get("source_language", "English")
-    target_language = config.get("target_language", "English")
-    
+    source_lang = config.get("source_lang", "English")
+    definition_lang = config.get("definition_lang", "English")
+
     # 3. Run in background to avoid freezing UI
     model = config.get("model", "gemini-flash-latest")
     mw.progress.start(label=f"Generating with {model}...", immediate=True)
@@ -213,71 +331,81 @@ def on_generate_click(editor):
             api_key = config.get("api_key")
             if not api_key or "YOUR_KEY" in api_key:
                 return {"error": "Please configure your API Key in Tools -> VocabAI Settings"}
-                
+
+            prompt_template = config.get("prompt_template", "") or None
+
             print(f"VocabAI: Using model: {model}")
-            print(f"VocabAI: Source language: {source_language}, Target language: {target_language}")
-            definition, examples, base_form = ai_client.generate_content(word, source_language, api_key, model, target_language)
-            
+            print(f"VocabAI: Source language: {source_lang}, Definition language: {definition_lang}")
+            definition, examples, base_form = ai_client.generate_content(
+                word, source_lang, api_key, model, definition_lang, prompt_template
+            )
+
             # Use base_form if available, otherwise fallback to original word
             target_word = base_form if base_form else word
-            
+
             # Call TTS - use source language for pronunciation
             # Generate a unique filename with language code to avoid caching and ambiguity
             safe_word = "".join([c for c in target_word if c.isalnum() or c in (' ', '-', '_')]).strip()
-            lang_code = tts_client.get_lang_code(source_language)
+            lang_code = tts_client.get_lang_code(source_lang)
             filename = f"vocabai_{safe_word}_{lang_code}_{int(time.time())}.mp3"
-            
+
             media_dir = mw.col.media.dir()
             full_path = os.path.join(media_dir, filename)
-            
-            success = tts_client.download_audio(target_word, source_language, full_path)
+
+            success = tts_client.download_audio(target_word, source_lang, full_path)
             
             return {
                 "definition": definition,
                 "examples": examples,
                 "base_form": base_form,
                 "audio_file": filename if success else None,
-                "source_language": source_language,
-                "target_language": target_language
+                "source_lang": source_lang,
+                "definition_lang": definition_lang
             }
         except Exception as e:
             return {"error": str(e)}
 
     def on_success(future):
         mw.progress.finish()
-        
+
         try:
             result = future.result()
         except Exception as e:
             showInfo(f"Error during generation: {str(e)}")
             return
-        
+
         if "error" in result:
             showInfo(f"Error: {result['error']}")
             return
-            
-        # Update fields
-        note["Back"] = result["definition"]
-        if "Example" in note:
-            note["Example"] = result["examples"]
-            
-        # Update Front field with base form if found
-        if result.get("base_form"):
-            # Preserve audio tag if it was there (though we usually append it)
-            # But here we are replacing the word.
-            # Let's just set it to the base form. Audio will be appended next.
-            note["Front"] = result["base_form"]
-            
-        # Add Audio
+
+        # Get field mapping (re-evaluate to be safe, though config shouldn't change)
+        word_field, def_field, ex_field = get_field_mapping(note, config)
+        
+        # Update word with base form
+        if result.get("base_form") and word_field in note:
+            note[word_field] = result["base_form"]
+
+        # Write definition and example
+        if def_field == ex_field:
+            # Same field: combine with double newline (visually 2 empty lines)
+            combined = f"{result['definition']}<br><br>{result['examples']}"
+            if def_field in note:
+                note[def_field] = combined
+        else:
+            # Different fields: write separately
+            if def_field in note:
+                note[def_field] = result["definition"]
+            if ex_field in note:
+                note[ex_field] = result["examples"]
+
+        # Add Audio (fallback to word_field if Audio doesn't exist)
         if result["audio_file"]:
-            # Check if Audio field exists, otherwise append to Front
             if "Audio" in note:
                 note["Audio"] = f"[sound:{result['audio_file']}]"
-            else:
-                note["Front"] += f" [sound:{result['audio_file']}]"
-                
+            elif word_field in note:
+                note[word_field] += f" [sound:{result['audio_file']}]"
+
         editor.loadNote()
-        # tooltip("Content generated successfully!")
 
     mw.taskman.run_in_background(background_op, on_success)
 
@@ -285,7 +413,7 @@ def add_editor_button(buttons, editor):
     # Use absolute path for icon to ensure it loads
     addon_path = os.path.dirname(__file__)
     icon_path = os.path.join(addon_path, ICON_NAME)
-    
+
     return buttons + [editor.addButton(
         icon=icon_path,
         cmd="vocabai_generate",
