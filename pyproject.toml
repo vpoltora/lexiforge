@@ -56,7 +56,7 @@ ignore = [
     "ANN401",   # any-type
     "COM812",   # missing-trailing-comma (conflicts with formatter)
     "D",        # docstrings (too strict for now)
-    "E501",     # line-too-long (let formatter handle)
+    "E501",     # line-too-long (let formatter handle, ignore in strings)
 ]
 
 # Allow fix for all enabled rules (when `--fix`) is provided.

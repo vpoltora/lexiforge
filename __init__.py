@@ -1,16 +1,11 @@
-import os
-import time
 import json
+import os
 import re
-import urllib.error
-import urllib.request
-import urllib.parse
+import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 from anki.hooks import addHook
-
-# Anki imports
 from aqt import mw
 from aqt.qt import (
     QAction,
@@ -23,13 +18,27 @@ from aqt.qt import (
     QLineEdit,
     QPushButton,
     Qt,
+    QTabWidget,
     QTextEdit,
     QVBoxLayout,
+    QWidget,
 )
 from aqt.utils import showInfo
 
+from .ai_client import (
+    DEFAULT_MODEL,
+    generate_content,
+    generate_story_with_words,
+    get_default_prompt_template,
+    get_default_story_prompt_template,
+    list_models,
+)
+from .language_constants import LANGUAGE_NAMES, SUPPORTED_LANGUAGES, get_lang_code
+from .tts_client import download_audio
+
 if TYPE_CHECKING:
     from concurrent.futures import Future
+
     from anki.notes import Note
     from aqt.editor import Editor
 
@@ -37,53 +46,8 @@ if TYPE_CHECKING:
 ADDON_NAME = "LexiForge"
 ICON_NAME = "lexiforge_icon.svg"
 CONFIG_FILENAME = "config.json"
-DEFAULT_MODEL = "gemini-flash-latest"
 _CONFIG_CACHE: dict[str, Any] | None = None
 
-# --- Language Constants ---
-
-# Supported languages mapping: Display Name -> ISO Code for Google TTS
-SUPPORTED_LANGUAGES = {
-    "English": "en",
-    "Mandarin Chinese": "zh-CN",
-    "Hindi": "hi",
-    "Spanish": "es",
-    "French": "fr",
-    "Arabic": "ar",
-    "Bengali": "bn",
-    "Russian": "ru",
-    "Portuguese": "pt-BR",
-    "Urdu": "ur",
-    "Indonesian": "id",
-    "German": "de",
-    "Japanese": "ja",
-    "Turkish": "tr",
-    "Korean": "ko",
-    "Vietnamese": "vi",
-    "Italian": "it",
-    "Tamil": "ta",
-    "Thai": "th",
-    "Polish": "pl",
-}
-
-# Get sorted list of language names for UI dropdowns
-LANGUAGE_NAMES = sorted(SUPPORTED_LANGUAGES.keys())
-
-
-def get_lang_code(language_name: str) -> str:
-    """
-    Get the ISO language code for a given language name.
-
-    Args:
-        language_name: Display name of the language (e.g., "English")
-
-    Returns:
-        ISO language code (e.g., "en"), defaults to "en" if not found
-    """
-    return SUPPORTED_LANGUAGES.get(language_name, "en")
-
-
-# --- Config ---
 
 def get_config_path() -> str:
     """Get the absolute path to the configuration file."""
@@ -126,215 +90,6 @@ def save_config(config: dict[str, Any]) -> None:
         json.dump(_CONFIG_CACHE, f, indent=4)
 
 
-# --- AI Client ---
-
-def get_default_prompt_template() -> str:
-    """Returns the default prompt template with variable placeholders."""
-    return """Analyze the word '{{word}}' in {{source_lang}}.
-
-1. Identify the BASE FORM (lemma) of the word.
-2. Translate the BASE FORM to {{definition_lang}}.
-
-Rules for the DEFINITION:
-1. If the base form is a simple, common word (like 'cat', 'milk', 'run'), provide ONLY the direct one-word translation in {{definition_lang}}.
-2. If it is complex, abstract, or ambiguous, provide the translation in {{definition_lang}} followed by a very short definition (4-7 words) in parentheses.
-
-3. Provide 1 example sentence in {{source_lang}} using the word (or its base form).
-
-Format the output exactly like this:
-BASE_FORM: [The base form of the word in {{source_lang}}]
-DEFINITION: [Translation/definition in {{definition_lang}}]
-EXAMPLE: [Sentence in {{source_lang}} using the word]
-
-Do not use markdown formatting."""
-
-
-def generate_content(
-    word: str,
-    source_lang: str,
-    api_key: str,
-    model: str = DEFAULT_MODEL,
-    definition_lang: str = "English",
-    prompt_template: Optional[str] = None,
-) -> tuple[str, str, str]:
-    """
-    Generate word definition and example using Gemini API.
-
-    Args:
-        word: The word to analyze
-        source_lang: Language of the word or "Auto" for auto-detection
-        api_key: Gemini API key
-        model: Model to use (default: gemini-flash-latest)
-        definition_lang: Language for definition (default: "English")
-        prompt_template: Custom prompt template (uses default if None)
-
-    Returns:
-        Tuple of (definition, example, base_form)
-    """
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
-
-    if prompt_template is None:
-        prompt_template = get_default_prompt_template()
-
-    # Handle Auto language detection
-    actual_source = source_lang
-    if source_lang.lower() == "auto":
-        # Modify prompt to detect language first
-        prompt_template = f"""First, detect the language of the word '{{{{word}}}}' and use that language as {{{{source_lang}}}}.
-
-{prompt_template}"""
-        actual_source = "the detected language"
-
-    # Replace template variables
-    prompt = prompt_template.replace("{{word}}", word)
-    prompt = prompt.replace("{{source_lang}}", actual_source)
-    prompt = prompt.replace("{{definition_lang}}", definition_lang)
-
-    data = {"contents": [{"parts": [{"text": prompt}]}]}
-
-    headers = {"Content-Type": "application/json"}
-
-    try:
-        req = urllib.request.Request(
-            url, data=json.dumps(data).encode("utf-8"), headers=headers
-        )
-        with urllib.request.urlopen(req) as response:
-            result = json.loads(response.read().decode("utf-8"))
-
-        # Parse response
-        try:
-            text = result["candidates"][0]["content"]["parts"][0]["text"]
-            print(f"LexiForge Raw Response: {text}")  # Debug log
-            return parse_response(text)
-        except (KeyError, IndexError) as e:
-            print(f"LexiForge Error parsing response: {e}")
-            return (
-                "Error parsing AI response",
-                "",
-                word,
-            )  # Return original word as fallback
-
-    except urllib.error.HTTPError as e:
-        error_body = e.read().decode("utf-8")
-        print(f"LexiForge HTTP Error {e.code}: {error_body}")
-
-        # If model not found (404), try to list available models to help debug
-        if e.code == 404:
-            print("LexiForge: Model not found. Listing available models...")
-            list_models(api_key)
-
-        return f"API Error: {e.code}", "", word
-    except Exception as e:
-        print(f"LexiForge General Error: {e}")
-        return f"Error: {e!s}", "", word
-
-
-def parse_response(text: str) -> tuple[str, str, str]:
-    """
-    Parse the AI response text to extract definition, example, and base form.
-
-    Args:
-        text: The raw text response from the AI.
-
-    Returns:
-        Tuple of (definition, example, base_form)
-    """
-    definition = ""
-    example = ""
-    base_form = ""
-
-    # Remove any markdown formatting if present
-    text = text.replace("**", "").replace("*", "")
-
-    # Use regex for more robust parsing
-    base_form_match = re.search(r"BASE_FORM:\s*(.+)", text, re.IGNORECASE)
-    definition_match = re.search(r"DEFINITION:\s*(.+)", text, re.IGNORECASE)
-    example_match = re.search(r"EXAMPLE:\s*(.+)", text, re.IGNORECASE)
-
-    base_form = base_form_match.group(1).strip() if base_form_match else ""
-    definition = definition_match.group(1).strip() if definition_match else ""
-    example = example_match.group(1).strip() if example_match else ""
-
-    return definition, example, base_form
-
-
-def list_models(api_key: str) -> list[dict[str, Any]]:
-    """
-    List available models from the Gemini API.
-
-    Args:
-        api_key: The API key to use.
-
-    Returns:
-        A list of model dictionaries.
-    """
-    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
-
-    try:
-        with urllib.request.urlopen(url) as response:
-            result = json.loads(response.read().decode("utf-8"))
-            models = result.get("models", [])
-            print("LexiForge Available Models:")
-            for m in models:
-                print(f"- {m['name']} ({m.get('displayName', '')})")
-            return models
-    except Exception as e:
-        print(f"LexiForge Error listing models: {e}")
-        return []
-
-
-# --- TTS Client ---
-
-def download_audio(text: str, language_name: str, output_path: str) -> bool:
-    """
-    Download TTS audio from Google Translate for the given text.
-
-    Args:
-        text: Text to convert to speech
-        language_name: Display name of the language (e.g., "English")
-        output_path: Path where the audio file will be saved
-
-    Returns:
-        True if successful, False otherwise
-    """
-    text = (text or "").strip()
-    if not text:
-        print("LexiForge: Skipping TTS download because the text is empty")
-        return False
-
-    lang_code = get_lang_code(language_name or "English")
-
-    # Google TTS API (unofficial)
-    base_url = "https://translate.google.com/translate_tts"
-    params = {"ie": "UTF-8", "q": text, "tl": lang_code, "client": "tw-ob"}
-
-    url = f"{base_url}?{urllib.parse.urlencode(params)}"
-
-    try:
-        # Use a custom User-Agent to avoid 403 errors
-        req = urllib.request.Request(
-            url,
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-            },
-        )
-        with urllib.request.urlopen(req) as response:
-            data = response.read()
-
-        with open(output_path, "wb") as f:
-            f.write(data)
-
-        print(
-            f"LexiForge: TTS audio downloaded successfully for '{text}' in {language_name} ({lang_code})"
-        )
-        return True
-    except Exception as e:
-        print(
-            f"LexiForge: Error downloading audio for {language_name} ({lang_code}): {e}"
-        )
-        return False
-
-
 # --- GUI ---
 
 class SettingsDialog(QDialog):
@@ -357,28 +112,35 @@ class SettingsDialog(QDialog):
         return sorted(fields)
 
     def setup_ui(self) -> None:
-        layout = QVBoxLayout()
+        main_layout = QVBoxLayout()
+
+        # Create tab widget
+        tabs = QTabWidget()
+
+        # Tab 1: Main Settings
+        main_tab = QWidget()
+        main_tab_layout = QVBoxLayout()
 
         # API Key
-        layout.addWidget(QLabel("Gemini API Key:"))
+        main_tab_layout.addWidget(QLabel("Gemini API Key:"))
         self.api_key_input = QLineEdit()
         self.api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.api_key_input.setText(self.config.get("api_key", ""))
-        layout.addWidget(self.api_key_input)
+        main_tab_layout.addWidget(self.api_key_input)
 
         # Pricing Link
         pricing_label = QLabel(
             '<a href="https://ai.google.dev/pricing">Check Gemini Pricing</a>'
         )
         pricing_label.setOpenExternalLinks(True)
-        layout.addWidget(pricing_label)
+        main_tab_layout.addWidget(pricing_label)
 
         # Model Selection
-        layout.addWidget(QLabel("Model:"))
+        main_tab_layout.addWidget(QLabel("Model:"))
         model_layout = QHBoxLayout()
         self.model_combo = QComboBox()
         self.model_combo.setEditable(True)  # Allow custom models
-        current_model = self.config.get("model", "gemini-flash-latest")
+        current_model = self.config.get("model", DEFAULT_MODEL)
         self.model_combo.addItem(current_model)
         self.model_combo.setCurrentText(current_model)
 
@@ -387,16 +149,16 @@ class SettingsDialog(QDialog):
 
         model_layout.addWidget(self.model_combo)
         model_layout.addWidget(self.load_models_btn)
-        layout.addLayout(model_layout)
+        main_tab_layout.addLayout(model_layout)
 
         # Add separator
         separator = QFrame()
         separator.setFrameShape(QFrame.Shape.HLine)
         separator.setFrameShadow(QFrame.Shadow.Sunken)
-        layout.addWidget(separator)
+        main_tab_layout.addWidget(separator)
 
         # Source Language (language of the word being learned)
-        layout.addWidget(QLabel("Source Language (word language):"))
+        main_tab_layout.addWidget(QLabel("Source Language (word language):"))
         self.source_lang_combo = QComboBox()
         # Add "Auto" as first option
         languages = ["Auto", *LANGUAGE_NAMES]
@@ -405,35 +167,35 @@ class SettingsDialog(QDialog):
         index = self.source_lang_combo.findText(current_source)
         if index >= 0:
             self.source_lang_combo.setCurrentIndex(index)
-        layout.addWidget(self.source_lang_combo)
+        main_tab_layout.addWidget(self.source_lang_combo)
 
         # Definition Language (language for definitions)
-        layout.addWidget(QLabel("Definition Language (definitions):"))
+        main_tab_layout.addWidget(QLabel("Definition Language (definitions):"))
         self.def_lang_combo = QComboBox()
         self.def_lang_combo.addItems(LANGUAGE_NAMES)
         current_def = self.config.get("definition_lang", "English")
         index = self.def_lang_combo.findText(current_def)
         if index >= 0:
             self.def_lang_combo.setCurrentIndex(index)
-        layout.addWidget(self.def_lang_combo)
+        main_tab_layout.addWidget(self.def_lang_combo)
 
         # Separator
         separator2 = QFrame()
         separator2.setFrameShape(QFrame.Shape.HLine)
         separator2.setFrameShadow(QFrame.Shadow.Sunken)
-        layout.addWidget(separator2)
+        main_tab_layout.addWidget(separator2)
 
         # Prompt Editor
-        layout.addWidget(QLabel("Prompt Template (Advanced):"))
+        main_tab_layout.addWidget(QLabel("Prompt Template (Advanced):"))
         self.prompt_editor = QTextEdit()
-        self.prompt_editor.setMaximumHeight(120)
+        self.prompt_editor.setMaximumHeight(100)
         self.prompt_editor.setPlaceholderText(
             "Variables: {{word}}, {{source_lang}}, {{definition_lang}}"
         )
         default_prompt = get_default_prompt_template()
         current_prompt = self.config.get("prompt_template", "") or default_prompt
         self.prompt_editor.setPlainText(current_prompt)
-        layout.addWidget(self.prompt_editor)
+        main_tab_layout.addWidget(self.prompt_editor)
 
         # Reset button
         reset_btn = QPushButton("Reset to Default Prompt")
@@ -442,16 +204,16 @@ class SettingsDialog(QDialog):
                 get_default_prompt_template()
             )
         )
-        layout.addWidget(reset_btn)
+        main_tab_layout.addWidget(reset_btn)
 
         # Separator
         separator3 = QFrame()
         separator3.setFrameShape(QFrame.Shape.HLine)
         separator3.setFrameShadow(QFrame.Shadow.Sunken)
-        layout.addWidget(separator3)
+        main_tab_layout.addWidget(separator3)
 
         # Field Mapping
-        layout.addWidget(QLabel("Field Mapping:"))
+        main_tab_layout.addWidget(QLabel("Field Mapping:"))
 
         field_mapping = self.config.get("field_mapping", {})
 
@@ -463,7 +225,7 @@ class SettingsDialog(QDialog):
         self.word_field_input.addItems(self.all_field_names)
         self.word_field_input.setCurrentText(field_mapping.get("word_field", "Front"))
         word_layout.addWidget(self.word_field_input)
-        layout.addLayout(word_layout)
+        main_tab_layout.addLayout(word_layout)
 
         # Definition field
         def_field_layout = QHBoxLayout()
@@ -475,7 +237,7 @@ class SettingsDialog(QDialog):
             field_mapping.get("definition_field", "Back")
         )
         def_field_layout.addWidget(self.def_field_input)
-        layout.addLayout(def_field_layout)
+        main_tab_layout.addLayout(def_field_layout)
 
         # Example field
         ex_field_layout = QHBoxLayout()
@@ -485,14 +247,79 @@ class SettingsDialog(QDialog):
         self.ex_field_input.addItems(self.all_field_names)
         self.ex_field_input.setCurrentText(field_mapping.get("example_field", "Back"))
         ex_field_layout.addWidget(self.ex_field_input)
-        layout.addLayout(ex_field_layout)
+        main_tab_layout.addLayout(ex_field_layout)
 
         # Help text
         help_label = QLabel(
             "💡 If Definition and Example use the same field, they will be combined."
         )
         help_label.setStyleSheet("color: gray; font-size: 11px;")
-        layout.addWidget(help_label)
+        main_tab_layout.addWidget(help_label)
+
+        main_tab_layout.addStretch()
+        main_tab.setLayout(main_tab_layout)
+
+        # Tab 2: Reading Practice Settings
+        practice_tab = QWidget()
+        practice_tab_layout = QVBoxLayout()
+
+        # CEFR Level
+        level_layout = QHBoxLayout()
+        level_layout.addWidget(QLabel("Language Level:"))
+        self.level_combo = QComboBox()
+        levels = ["A1", "A2", "B1", "B2", "C1", "C2"]
+        self.level_combo.addItems(levels)
+        current_level = self.config.get("story_level", "B1")
+        index = self.level_combo.findText(current_level)
+        if index >= 0:
+            self.level_combo.setCurrentIndex(index)
+        level_layout.addWidget(self.level_combo)
+        practice_tab_layout.addLayout(level_layout)
+
+        # Story Length
+        length_layout = QHBoxLayout()
+        length_layout.addWidget(QLabel("Story Length:"))
+        self.length_combo = QComboBox()
+        self.length_combo.addItem("Short (100-150 words)", "short")
+        self.length_combo.addItem("Medium (200-300 words)", "medium")
+        self.length_combo.addItem("Long (400-500 words)", "long")
+        current_length = self.config.get("story_length", "short")
+        for i in range(self.length_combo.count()):
+            if self.length_combo.itemData(i) == current_length:
+                self.length_combo.setCurrentIndex(i)
+                break
+        length_layout.addWidget(self.length_combo)
+        practice_tab_layout.addLayout(length_layout)
+
+        # Story Prompt Editor
+        practice_tab_layout.addWidget(QLabel("Story Prompt Template (Advanced):"))
+        self.story_prompt_editor = QTextEdit()
+        self.story_prompt_editor.setMaximumHeight(200)
+        self.story_prompt_editor.setPlaceholderText(
+            "Variables: {{words}}, {{level}}, {{word_count}}"
+        )
+        default_story_prompt = get_default_story_prompt_template()
+        current_story_prompt = self.config.get("story_prompt_template", "") or default_story_prompt
+        self.story_prompt_editor.setPlainText(current_story_prompt)
+        practice_tab_layout.addWidget(self.story_prompt_editor)
+
+        # Reset button for story prompt
+        reset_story_btn = QPushButton("Reset to Default Story Prompt")
+        reset_story_btn.clicked.connect(
+            lambda: self.story_prompt_editor.setPlainText(
+                get_default_story_prompt_template()
+            )
+        )
+        practice_tab_layout.addWidget(reset_story_btn)
+
+        practice_tab_layout.addStretch()
+        practice_tab.setLayout(practice_tab_layout)
+
+        # Add tabs
+        tabs.addTab(main_tab, "Main Settings")
+        tabs.addTab(practice_tab, "Reading Practice")
+
+        main_layout.addWidget(tabs)
 
         # Buttons
         buttons = QDialogButtonBox(
@@ -500,9 +327,9 @@ class SettingsDialog(QDialog):
         )
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        main_layout.addWidget(buttons)
 
-        self.setLayout(layout)
+        self.setLayout(main_layout)
 
     def load_models(self) -> None:
         api_key = self.api_key_input.text()
@@ -532,7 +359,7 @@ class SettingsDialog(QDialog):
                 self.model_combo.addItem(model_name)
 
             # Ensure current model is selected if present, or add it
-            current = self.config.get("model", "gemini-flash-latest")
+            current = self.config.get("model", DEFAULT_MODEL)
             index = self.model_combo.findText(current)
             if index >= 0:
                 self.model_combo.setCurrentIndex(index)
@@ -560,6 +387,10 @@ class SettingsDialog(QDialog):
             "definition_field": self.def_field_input.currentText() or "Back",
             "example_field": self.ex_field_input.currentText() or "Back",
         }
+        # Save Reading Practice settings
+        self.config["story_level"] = self.level_combo.currentText()
+        self.config["story_length"] = self.length_combo.currentData()
+        self.config["story_prompt_template"] = self.story_prompt_editor.toPlainText()
         save_config(self.config)
         super().accept()
 
@@ -652,11 +483,6 @@ def _generate_content_and_audio(
     model = conf.get("model", "gemini-flash-latest")
     prompt_template = conf.get("prompt_template", "") or None
 
-    print(f"LexiForge: Using model: {model}")
-    print(
-        f"LexiForge: Source language: {source_lang}, Definition language: {definition_lang}"
-    )
-
     definition, examples, base_form = generate_content(
         word, source_lang, api_key, model, definition_lang, prompt_template
     )
@@ -716,7 +542,7 @@ def on_generate_click(editor: "Editor") -> None:
     word = note[word_field]
     source_lang = conf.get("source_lang", "English")
     definition_lang = conf.get("definition_lang", "English")
-    model = conf.get("model", "gemini-flash-latest")
+    model = conf.get("model", DEFAULT_MODEL)
 
     mw.progress.start(label=f"Generating with {model}...", immediate=True)
 
@@ -751,13 +577,178 @@ def add_editor_button(buttons, editor):
     addon_path = os.path.dirname(__file__)
     icon_path = os.path.join(addon_path, ICON_NAME)
 
-    return [*buttons, editor.addButton(icon=icon_path, cmd="lexiforge_generate", func=lambda e=editor: on_generate_click(e), tip=f"Generate with {ADDON_NAME} (Ctrl+G)", keys="Ctrl+G")]
+    return [*buttons, editor.addButton(icon=icon_path, cmd="lexiforge_generate", func=lambda e=editor: on_generate_click(e), tip=f"Generate with {ADDON_NAME} (Ctrl+G)", keys="Ctrl+G")]  # noqa: E501
 
 
-# Initialize
+# --- Story Generation from Studied Words ---
+
+def get_studied_words_today() -> list[str]:
+    """
+    Get words from cards studied today with interval >= 1 day.
+
+    Returns:
+        List of words (from the first field of each card)
+    """
+    if not mw or not mw.col:
+        return []
+
+    # Get today's timestamp (start of day in milliseconds)
+    today_start = int(time.time() - (time.time() % 86400)) * 1000
+
+    # Query cards reviewed today with interval >= 1 day
+    # ivl is in days, so we want ivl >= 1
+    card_ids = mw.col.db.list(
+        """
+        SELECT DISTINCT c.id
+        FROM cards c
+        JOIN revlog r ON c.id = r.cid
+        WHERE r.id >= ?
+        AND c.ivl >= 1
+        """,
+        today_start
+    )
+
+    if not card_ids:
+        return []
+
+    # Get the words from the first field of each card's note
+    words = []
+    for card_id in card_ids:
+        card = mw.col.get_card(card_id)
+        note = card.note()
+        if note and note.fields:
+            word = note.fields[0].strip()
+            # Remove HTML tags and sound tags
+            word = re.sub(r'<[^>]+>', '', word)
+            word = re.sub(r'\[sound:[^\]]+\]', '', word)
+            word = word.strip()
+            if word and word not in words:
+                words.append(word)
+
+    return words
+
+
+class StoryDialog(QDialog):
+    """Dialog to display generated story from studied words."""
+
+    def __init__(self, parent: QDialog | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(f"{ADDON_NAME} - Reading Practice")
+        self.setMinimumSize(600, 500)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
+
+        layout = QVBoxLayout()
+
+        # Info label
+        info_label = QLabel("Generating a story with your studied words...")
+        layout.addWidget(info_label)
+
+        # Story text area
+        self.story_text = QTextEdit()
+        self.story_text.setReadOnly(True)
+        self.story_text.setMinimumHeight(350)
+        self.story_text.setAcceptRichText(True)
+
+        # Increase font size for better readability
+        font = self.story_text.font()
+        font.setPointSize(14)  # Larger font
+        self.story_text.setFont(font)
+
+        layout.addWidget(self.story_text)
+
+        # Buttons
+        button_box = QDialogButtonBox()
+
+        self.regenerate_btn = QPushButton("Regenerate")
+        self.regenerate_btn.clicked.connect(self.regenerate_story)
+        button_box.addButton(self.regenerate_btn, QDialogButtonBox.ButtonRole.ActionRole)
+
+        close_btn = button_box.addButton(QDialogButtonBox.StandardButton.Close)
+        close_btn.clicked.connect(self.close)
+
+        layout.addWidget(button_box)
+
+        self.setLayout(layout)
+
+        # Generate initial story
+        self.words: list[str] = []
+        self.generate_story()
+
+    def generate_story(self) -> None:
+        """Generate and display the story."""
+        config = get_config()
+        api_key = config.get("api_key")
+
+        if not api_key or "YOUR_KEY" in api_key:
+            self.story_text.setText("Please configure your API Key in Tools → LexiForge Settings")
+            return
+
+        # Get studied words
+        self.words = get_studied_words_today()
+
+        if not self.words:
+            self.story_text.setText("No words found. Study some cards first!\n\nMake sure you have cards with interval ≥ 1 day that were reviewed today.")  # noqa: E501
+            self.regenerate_btn.setEnabled(False)
+            return
+
+        self.story_text.setText(f"📚 Using {len(self.words)} words: {', '.join(self.words[:10])}{'...' if len(self.words) > 10 else ''}\n\nGenerating story...")  # noqa: E501
+
+        self.regenerate_btn.setEnabled(False)
+
+        # Generate story in background
+        model = config.get("model", DEFAULT_MODEL)
+        source_lang = config.get("source_lang", "Auto")
+        level = config.get("story_level", "B1")
+        length = config.get("story_length", "short")
+        story_prompt = config.get("story_prompt_template", "") or None
+
+        def generate() -> str:
+            return generate_story_with_words(
+                self.words, api_key, model, source_lang, level, length, story_prompt
+            )
+
+        def on_done(future: "Future[str]") -> None:
+            try:
+                story = future.result()
+                # Convert markdown bold (**text**) to HTML (<b>text</b>)
+                story_html = re.sub(r'\*\*([^*]+)\*\*', r'<b>\1</b>', story)
+                # Convert newlines to HTML breaks
+                story_html = story_html.replace('\n', '<br>')
+                self.story_text.setHtml(story_html)
+                self.regenerate_btn.setEnabled(True)
+            except Exception as e:
+                self.story_text.setText(f"Error: {e!s}")
+                self.regenerate_btn.setEnabled(True)
+
+        from concurrent.futures import ThreadPoolExecutor
+        executor = ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(generate)
+        future.add_done_callback(lambda f: mw.taskman.run_on_main(lambda: on_done(f)))
+
+    def regenerate_story(self) -> None:
+        """Regenerate the story with the same words."""
+        self.generate_story()
+
+
+def open_story_dialog() -> None:
+    """Open the story generation dialog."""
+    dialog = StoryDialog(mw)
+    dialog.exec()
+
+
+# Initialize - always clean up old menu items before adding new ones
+# Remove any existing LexiForge menu items to prevent duplicates
+for action in list(mw.form.menuTools.actions()):
+    if action.text() in (f"{ADDON_NAME} Settings", f"{ADDON_NAME} Reading Practice"):
+        mw.form.menuTools.removeAction(action)
+
 addHook("setupEditorButtons", add_editor_button)
 
-# Add menu item
-action = QAction(f"{ADDON_NAME} Settings", mw)
-action.triggered.connect(open_settings)
-mw.form.menuTools.addAction(action)
+# Add menu items
+settings_action = QAction(f"{ADDON_NAME} Settings", mw)
+settings_action.triggered.connect(open_settings)
+mw.form.menuTools.addAction(settings_action)
+
+story_action = QAction(f"{ADDON_NAME} Reading Practice", mw)
+story_action.triggered.connect(open_story_dialog)
+mw.form.menuTools.addAction(story_action)

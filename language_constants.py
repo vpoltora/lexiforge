@@ -1,5 +1,5 @@
 """
-Language constants for VocabAI plugin.
+Language constants for LexiForge plugin.
 Contains the 20 most popular world languages supported by both Gemini API and Google Translate TTS.
 """
 

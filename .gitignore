@@ -47,3 +47,10 @@ meta.json
 *.webm
 
 test_audio_samples/
+
+DEVELOPMENT.md
+Makefile
+pyproject.toml
+requirements.txt
+tests/
+test_audio_samples/

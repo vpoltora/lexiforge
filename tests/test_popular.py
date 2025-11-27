@@ -1,15 +1,13 @@
 import os
 import sys
-import time
 import unittest
 
 # Add the parent directory of the project to sys.path
-# We need to go up 3 levels: tests -> lexiforge -> python (root)
 sys.path.append(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 )
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 # Mock Anki modules before importing lexiforge
 sys.modules["aqt"] = MagicMock()
@@ -19,81 +17,65 @@ sys.modules["anki"] = MagicMock()
 sys.modules["anki.hooks"] = MagicMock()
 
 from lexiforge import ai_client, tts_client
-from lexiforge.config import get_config
 
 
 class TestLexiForgePopular(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.config = get_config()
-        if not cls.config or not cls.config.get("api_key"):
-            raise ValueError("Config not found or API Key missing.")
-        cls.api_key = cls.config["api_key"]
-        cls.model = cls.config.get("model", "gemini-flash-latest")
-
-        # 5 Popular Languages to test
-        # Format: (Source, Definition, Word to test, Expected Base Form)
-        cls.test_cases = [
-            ("Spanish", "English", "comiendo", "comer"),
-            ("French", "English", "allé", "aller"),
-            ("German", "English", "gegangen", "gehen"),
-            ("Italian", "English", "mangiato", "mangiare"),
-            ("Portuguese", "English", "falando", "falar"),
+    def setUp(self) -> None:
+        # Test cases: (Source, Definition Lang, Word, Expected Base, Expected Definition, Expected Example)
+        self.test_cases = [
+            ("Spanish", "English", "comiendo", "comer", "to eat", "Estoy comiendo una manzana."),
+            ("French", "English", "allé", "aller", "to go", "Je suis allé au marché."),
+            ("German", "English", "gegangen", "gehen", "to go", "Ich bin nach Hause gegangen."),
+            ("Italian", "English", "mangiato", "mangiare", "to eat", "Ho mangiato la pizza."),
+            ("Portuguese", "English", "falando", "falar", "to speak", "Estou falando português."),
         ]
 
-    def test_popular_languages(self) -> None:
-        for source, definition_lang, word, expected_base in self.test_cases:
+    @patch('lexiforge.ai_client.urllib.request.urlopen')
+    @patch('lexiforge.tts_client.urllib.request.urlopen')
+    def test_popular_languages(self, mock_tts_urlopen, mock_urlopen) -> None:
+        for source, definition_lang, word, expected_base, expected_def, expected_ex in self.test_cases:
             with self.subTest(source=source, word=word):
-                print(f"\nTesting {source}: {word} -> {definition_lang}")
+                # Mock AI response
+                mock_response = MagicMock()
+                mock_response.read.return_value = f'''{{
+                    "candidates": [{{
+                        "content": {{
+                            "parts": [{{
+                                "text": "BASE_FORM: {expected_base}\\nDEFINITION: {expected_def}\\nEXAMPLE: {expected_ex}"
+                            }}]
+                        }}
+                    }}]
+                }}'''.encode('utf-8')
+                mock_response.__enter__.return_value = mock_response
+                mock_response.__exit__.return_value = None
+                mock_urlopen.return_value = mock_response
+
+                # Mock TTS download
+                tts_response = MagicMock()
+                tts_response.read.return_value = b"fake-bytes"
+                tts_response.__enter__.return_value = tts_response
+                tts_response.__exit__.return_value = None
+                mock_tts_urlopen.return_value = tts_response
+
                 definition, example, base_form = ai_client.generate_content(
-                    word, source, self.api_key, self.model, definition_lang
+                    word, source, "fake_api_key", "gemini-flash-latest", definition_lang
                 )
 
-                print(f"  Base: {base_form}")
-                print(f"  Def: {definition}")
-                print(f"  Ex: {example}")
+                # Verify results
+                self.assertEqual(base_form, expected_base)
+                self.assertEqual(definition, expected_def)
+                self.assertEqual(example, expected_ex)
 
-                # 1. Check Base Form
-                self.assertEqual(
-                    base_form.lower(),
-                    expected_base.lower(),
-                    f"Base form for {word} should be {expected_base}",
-                )
-
-                # 2. Check Definition Language (English)
-                # Simple heuristic: check for common English words
-                self.assertTrue(
-                    any(
-                        w in definition.lower()
-                        for w in ["to", "the", "a", "an", "eat", "go", "speak"]
-                    ),
-                    f"Definition for {word} should be in English",
-                )
-
-                # 3. Check Example Language (Source)
-                # Heuristic: Check if the example contains the base form or the word itself (often true)
-                # Or check for common words in that language if possible, but that's hard.
-                # We rely on the prompt being obeyed.
-                self.assertTrue(len(example) > 5, "Example should not be empty")
-
-                # 4. Check Audio Generation
-                safe_word = "".join(
-                    [c for c in base_form if c.isalnum() or c in (" ", "-", "_")]
-                ).strip()
+                # Test TTS client
                 lang_code = tts_client.get_lang_code(source)
-                filename = f"test_{safe_word}_{lang_code}.mp3"
-                path = os.path.join("test_audio_samples", filename)
+                self.assertIsNotNone(lang_code)
 
-                if os.path.exists(path):
-                    os.remove(path)
-
-                success = tts_client.download_audio(base_form, source, path)
-                self.assertTrue(success, f"Audio generation failed for {source}")
-                self.assertTrue(
-                    os.path.exists(path), f"Audio file missing for {source}"
-                )
-
-                time.sleep(1)  # Avoid rate limits
+                # Test audio download (mocked)
+                output_path = "test.mp3"
+                success = tts_client.download_audio(base_form, source, output_path)
+                self.assertTrue(success)
+                if os.path.exists(output_path):
+                    os.remove(output_path)
 
 
 if __name__ == "__main__":

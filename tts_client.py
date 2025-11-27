@@ -1,30 +1,10 @@
 import urllib.parse
 import urllib.request
 
-# Import language constants
-# Use absolute import to avoid relative import issues in some environments
 try:
-    import lexiforge.language_constants as language_constants
+    from .language_constants import get_lang_code
 except ImportError:
-    # Fallback for tests or direct execution
-    try:
-        from . import language_constants
-    except ImportError:
-        import language_constants
-
-
-def get_lang_code(language_name: str) -> str:
-    """
-    Get the ISO language code for a given language name.
-    Uses the centralized SUPPORTED_LANGUAGES dictionary.
-
-    Args:
-        language_name: Display name of the language (e.g., "English")
-
-    Returns:
-        ISO language code (e.g., "en"), defaults to "en" if not found
-    """
-    return language_constants.get_lang_code(language_name)
+    from language_constants import get_lang_code
 
 
 def download_audio(text: str, language_name: str, output_path: str) -> bool:

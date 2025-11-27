@@ -16,13 +16,14 @@ def get_config() -> dict[str, Any]:
     Returns an empty dictionary if the file does not exist.
     """
     config_path = get_config_path()
-    if os.path.exists(config_path):
-        try:
-            with open(config_path, encoding="utf-8") as f:
-                return json.load(f)
-        except json.JSONDecodeError:
-            return {}
-    return {}
+    if not os.path.exists(config_path):
+        return {}
+
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            return json.load(f)
+    except json.JSONDecodeError:
+        return {}
 
 
 def save_config(config: dict[str, Any]) -> None:

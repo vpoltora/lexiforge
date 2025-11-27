@@ -1,5 +1,9 @@
 {
-    "name": "LexiForge",
     "package": "lexiforge",
-    "author": "poltora.dev"
+    "name": "LexiForge",
+    "mod": 1764527775,
+    "conflicts": [],
+    "min_point_version": 231000,
+    "human_version": "1.0.0",
+    "homepage": "https://github.com/vpoltora/lexiforge"
 }

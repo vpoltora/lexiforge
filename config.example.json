@@ -1,0 +1,15 @@
+{
+    "api_key": "YOUR_GEMINI_API_KEY_HERE",
+    "model": "gemini-flash-latest",
+    "source_lang": "Auto",
+    "definition_lang": "English",
+    "prompt_template": "",
+    "field_mapping": {
+        "word_field": "Front",
+        "definition_field": "Back",
+        "example_field": "Back"
+    },
+    "story_level": "B1",
+    "story_length": "short",
+    "story_prompt_template": ""
+}

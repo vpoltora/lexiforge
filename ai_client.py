@@ -1,31 +1,53 @@
 import json
+import logging
 import re
 import urllib.error
 import urllib.request
 from typing import Any, Optional
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_MODEL = "gemini-flash-latest"
 
 
 def get_default_prompt_template() -> str:
-    """Returns the default prompt template with variable placeholders."""
-    return """Analyze the word '{{word}}' in {{source_lang}}.
+    return """Analyze the word ‘{{word}}’ in {{source_lang}}.
+	1.	Find its base form (lemma).
+	2.	Translate this base form into {{definition_lang}}:
+	•	If it is a simple common word (e.g. ‘cat’, ‘milk’, ‘run’), give only a one-word translation in {{definition_lang}}.
+	•	Otherwise give the translation in {{definition_lang}} plus a very short 4-7 word definition in parentheses.
+	3.	Give 1 example sentence in {{source_lang}} using the base form.
 
-1. Identify the BASE FORM (lemma) of the word.
-2. Translate the BASE FORM to {{definition_lang}}.
+Format the answer exactly as:
+BASE_FORM: [base form in {{source_lang}}]
+DEFINITION: [translation/definition in {{definition_lang}}]
+EXAMPLE: [sentence in {{source_lang}} using the base form]
 
-Rules for the DEFINITION:
-1. If the base form is a simple, common word (like 'cat', 'milk', 'run'), provide ONLY the direct one-word translation in {{definition_lang}}.
-2. If it is complex, abstract, or ambiguous, provide the translation in {{definition_lang}} followed by a very short definition (4-7 words) in parentheses.
+Do not use markdown formatting."""  # noqa: E501
 
-3. Provide 1 example sentence in {{source_lang}} using the word (or its base form).
 
-Format the output exactly like this:
-BASE_FORM: [The base form of the word in {{source_lang}}]
-DEFINITION: [Translation/definition in {{definition_lang}}]
-EXAMPLE: [Sentence in {{source_lang}} using the word]
+def get_default_story_prompt_template() -> str:
+    """Returns the default story prompt template with variable placeholders."""
+    return """Analyze the following words and detect their language: {{words}}
 
-Do not use markdown formatting."""
+Then create an engaging and educational short story ({{word_count}}) IN THE EXACT SAME LANGUAGE as these words.
+
+IMPORTANT: The story MUST be written in the same language as the input words. Do not translate or use any other language.
+
+Requirements:
+- Detect the language of the words first
+- Write the ENTIRE story in that detected language
+- Use all or most of the provided words naturally in context
+- Highlight the studied words by wrapping them in **bold** (using **word** format)
+- Make the story interesting and memorable
+- Keep the language level appropriate for {{level}} learners (CEFR {{level}})
+- The story should be approximately {{word_count}}
+- Add a title to the story in the same language
+
+Format your response as:
+Title: [Story Title in the detected language]
+
+[Story text with **highlighted** words in the detected language]"""  # noqa: E501
 
 
 def generate_content(
@@ -49,18 +71,21 @@ def generate_content(
 
     Returns:
         Tuple of (definition, example, base_form)
+
+    Raises:
+        ValueError: If api_key is empty or None
     """
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+    if not api_key or not api_key.strip():
+        raise ValueError("API key is required and cannot be empty")
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
     if prompt_template is None:
         prompt_template = get_default_prompt_template()
 
-    # Handle Auto language detection
     actual_source = source_lang
     if source_lang.lower() == "auto":
-        # Modify prompt to detect language first
         prompt_template = f"""First, detect the language of the word '{{{{word}}}}' and use that language as {{{{source_lang}}}}.
-
 {prompt_template}"""
         actual_source = "the detected language"
 
@@ -71,40 +96,60 @@ def generate_content(
 
     data = {"contents": [{"parts": [{"text": prompt}]}]}
 
-    headers = {"Content-Type": "application/json"}
+    headers = {
+        "Content-Type": "application/json",
+        "x-goog-api-key": api_key,
+    }
 
     try:
         req = urllib.request.Request(
             url, data=json.dumps(data).encode("utf-8"), headers=headers
         )
-        with urllib.request.urlopen(req) as response:
+        with urllib.request.urlopen(req, timeout=30) as response:
             result = json.loads(response.read().decode("utf-8"))
 
         # Parse response
         try:
-            text = result["candidates"][0]["content"]["parts"][0]["text"]
-            print(f"LexiForge Raw Response: {text}")  # Debug log
+            # Safely extract nested values with checks
+            candidates = result.get("candidates")
+            if not candidates or not isinstance(candidates, list) or len(candidates) == 0:
+                raise KeyError("Missing or empty 'candidates' in result")
+            candidate = candidates[0]
+            content = candidate.get("content")
+            if not content or not isinstance(content, dict):
+                raise KeyError("Missing or invalid 'content' in candidate")
+            parts = content.get("parts")
+            if not parts or not isinstance(parts, list) or len(parts) == 0:
+                raise KeyError("Missing or empty 'parts' in content")
+            part = parts[0]
+            text = part.get("text")
+            if text is None:
+                raise KeyError("Missing 'text' in part")
+            logger.debug(f"Raw Response: {text}")
             return parse_response(text)
-        except (KeyError, IndexError) as e:
-            print(f"LexiForge Error parsing response: {e}")
+        except (KeyError, IndexError, TypeError) as e:
+            logger.error(f"Error parsing response: {e}")
             return (
                 "Error parsing AI response",
                 "",
                 word,
-            )  # Return original word as fallback
+            )
+
 
     except urllib.error.HTTPError as e:
         error_body = e.read().decode("utf-8")
-        print(f"LexiForge HTTP Error {e.code}: {error_body}")
+        logger.error(f"HTTP Error {e.code}: {error_body}")
 
-        # If model not found (404), try to list available models to help debug
         if e.code == 404:
-            print("LexiForge: Model not found. Listing available models...")
+            logger.info("Model not found. Listing available models...")
             list_models(api_key)
 
         return f"API Error: {e.code}", "", word
+    except urllib.error.URLError as e:
+        logger.error(f"Network Error: {e}")
+        return f"Network Error: {e.reason}", "", word
     except Exception as e:
-        print(f"LexiForge General Error: {e}")
+        logger.exception(f"Unexpected error: {e}")
         return f"Error: {e!s}", "", word
 
 
@@ -147,16 +192,312 @@ def list_models(api_key: str) -> list[dict[str, Any]]:
     Returns:
         A list of model dictionaries.
     """
-    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+    url = "https://generativelanguage.googleapis.com/v1beta/models"
+    headers = {"x-goog-api-key": api_key}
 
     try:
-        with urllib.request.urlopen(url) as response:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=30) as response:
             result = json.loads(response.read().decode("utf-8"))
             models = result.get("models", [])
-            print("LexiForge Available Models:")
+            logger.info("Available Models:")
             for m in models:
-                print(f"- {m['name']} ({m.get('displayName', '')})")
+                logger.info(f"- {m['name']} ({m.get('displayName', '')})")
             return models
     except Exception as e:
-        print(f"LexiForge Error listing models: {e}")
+        logger.error(f"Error listing models: {e}")
         return []
+
+
+def generate_story_with_words(
+    words: list[str],
+    api_key: str,
+    model: str,
+    language: str = "English",
+    level: str = "B1",
+    length: str = "short",
+    prompt_template: Optional[str] = None
+) -> str:
+    """
+    Generate a story using the given words via Gemini API.
+
+    Args:
+        words: List of words to include in the story
+        api_key: Gemini API key
+        model: Model name to use
+        language: Target language for the story (source language of the words)
+        level: CEFR level (A1, A2, B1, B2, C1, C2)
+        length: Story length (short, medium, long)
+        prompt_template: Custom prompt template (uses default if None)
+
+    Returns:
+        Generated story text
+    """
+    if not words:
+        return "No words available to generate a story."
+
+    words_list = ", ".join(words[:30])  # Limit to 30 words for reasonable story
+
+    # Map length to word count and token limit
+    length_config = {
+        "short": {"words": "100-150 words", "tokens": 1500},
+        "medium": {"words": "200-300 words", "tokens": 2500},
+        "long": {"words": "400-500 words", "tokens": 4000},
+    }
+
+    config = length_config.get(length, length_config["short"])
+    word_count = config["words"]
+    max_tokens = config["tokens"]
+
+    if prompt_template is None:
+        prompt_template = get_default_story_prompt_template()
+
+    # Replace template variables
+    prompt = prompt_template.replace("{{words}}", words_list)
+    prompt = prompt.replace("{{level}}", level)
+    prompt = prompt.replace("{{word_count}}", word_count)
+
+    # Handle Auto language detection - modify prompt if needed
+    if language.lower() != "auto":
+        # If specific language is set, ensure prompt uses it
+        prompt = prompt.replace(
+            "Analyze the following words and detect their language",
+            f"Use the following words in {language}"
+        )
+        prompt = prompt.replace(
+            "IN THE EXACT SAME LANGUAGE as these words",
+            f"in {language}"
+        )
+        prompt = prompt.replace("Detect the language of the words first", "")
+        prompt = prompt.replace("Write the ENTIRE story in that detected language", f"Write the ENTIRE story in {language}")
+        prompt = prompt.replace("in the detected language", f"in {language}")
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+
+    request_body = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": 0.9,
+            "topK": 40,
+            "topP": 0.95,
+            "maxOutputTokens": max_tokens,
+        },
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "x-goog-api-key": api_key,
+    }
+
+    try:
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(request_body).encode("utf-8"),
+            headers=headers,
+        )
+
+        with urllib.request.urlopen(req, timeout=30) as response:
+            result = json.loads(response.read().decode("utf-8"))
+
+        # Parse response with error handling
+        try:
+            story = result["candidates"][0]["content"]["parts"][0]["text"]
+
+            # Clean up the story - remove language detection lines if present
+            lines = story.split('\n')
+            cleaned_lines = []
+            skip_next = False
+
+            for line in lines:
+                # Skip language detection headers
+                if 'linguagem detectada' in line.lower() or 'detected language' in line.lower():
+                    skip_next = True
+                    continue
+                # Skip separator lines after detection
+                if skip_next and (line.strip() == '***' or line.strip() == '---' or line.strip() == ''):
+                    if line.strip() in ('***', '---'):
+                        skip_next = False
+                    continue
+                skip_next = False
+                cleaned_lines.append(line)
+
+            story = '\n'.join(cleaned_lines).strip()
+            return story
+        except (KeyError, IndexError) as e:
+            # Create detailed error message for user
+            error_details = f"Parsing Error: {e!s}\n\n"
+            error_details += "API Response Keys: " + str(list(result.keys())) + "\n\n"
+
+            if "candidates" in result:
+                error_details += f"Candidates count: {len(result.get('candidates', []))}\n"
+                if result.get('candidates'):
+                    candidate = result['candidates'][0]
+                    error_details += f"Candidate keys: {list(candidate.keys())}\n"
+                    if 'content' in candidate:
+                        error_details += f"Content keys: {list(candidate['content'].keys())}\n"
+
+            # Also write to a log file for debugging
+            log_path = os.path.expanduser("~/Library/Application Support/Anki2/lexiforge_error.log")
+            with open(log_path, "a") as f:
+                f.write(f"\n=== {datetime.datetime.now()} ===\n")
+                f.write(error_details)
+                f.write("\nFull response:\n")
+                f.write(json.dumps(result, indent=2))
+                f.write("\n")
+
+            return f"❌ Parsing Error\n\n{error_details}\n\nFull log saved to:\n{log_path}"
+
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8")
+        logger.error(f"LexiForge Story HTTP Error {e.code}: {error_body}")
+        return f"API Error: {e.code}\n\n{error_body}"
+    except Exception as e:
+        logger.error(f"LexiForge Story Error: {e}")
+        return f"Error generating story: {e!s}"
+
+
+def generate_story_with_words(
+    words: list[str],
+    api_key: str,
+    model: str,
+    language: str = "English",
+    level: str = "B1",
+    length: str = "short",
+    prompt_template: Optional[str] = None
+) -> str:
+    """
+    Generate a story using the given words via Gemini API.
+
+    Args:
+        words: List of words to include in the story
+        api_key: Gemini API key
+        model: Model name to use
+        language: Target language for the story (source language of the words)
+        level: CEFR level (A1, A2, B1, B2, C1, C2)
+        length: Story length (short, medium, long)
+        prompt_template: Custom prompt template (uses default if None)
+
+    Returns:
+        Generated story text
+    """
+    if not words:
+        return "No words available to generate a story."
+
+    words_list = ", ".join(words[:30])  # Limit to 30 words for reasonable story
+
+    # Map length to word count and token limit
+    length_config = {
+        "short": {"words": "100-150 words", "tokens": 1500},
+        "medium": {"words": "200-300 words", "tokens": 2500},
+        "long": {"words": "400-500 words", "tokens": 4000},
+    }
+
+    config = length_config.get(length, length_config["short"])
+    word_count = config["words"]
+    max_tokens = config["tokens"]
+
+    if prompt_template is None:
+        prompt_template = get_default_story_prompt_template()
+
+    # Replace template variables
+    prompt = prompt_template.replace("{{words}}", words_list)
+    prompt = prompt.replace("{{level}}", level)
+    prompt = prompt.replace("{{word_count}}", word_count)
+
+    # Handle Auto language detection - modify prompt if needed
+    if language.lower() != "auto":
+        # If specific language is set, ensure prompt uses it
+        prompt = prompt.replace(
+            "Analyze the following words and detect their language",
+            f"Use the following words in {language}"
+        )
+        prompt = prompt.replace(
+            "IN THE EXACT SAME LANGUAGE as these words",
+            f"in {language}"
+        )
+        prompt = prompt.replace("Detect the language of the words first", "")
+        prompt = prompt.replace("Write the ENTIRE story in that detected language", f"Write the ENTIRE story in {language}")
+        prompt = prompt.replace("in the detected language", f"in {language}")
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+
+    request_body = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": 0.9,
+            "topK": 40,
+            "topP": 0.95,
+            "maxOutputTokens": max_tokens,
+        },
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "x-goog-api-key": api_key,
+    }
+
+    try:
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(request_body).encode("utf-8"),
+            headers=headers,
+        )
+
+        with urllib.request.urlopen(req, timeout=30) as response:
+            result = json.loads(response.read().decode("utf-8"))
+
+        # Parse response with error handling
+        try:
+            story = result["candidates"][0]["content"]["parts"][0]["text"]
+
+            # Clean up the story - remove language detection lines if present
+            lines = story.split('\n')
+            cleaned_lines = []
+            skip_next = False
+
+            for line in lines:
+                # Skip language detection headers
+                if 'linguagem detectada' in line.lower() or 'detected language' in line.lower():
+                    skip_next = True
+                    continue
+                # Skip separator lines after detection
+                if skip_next and (line.strip() == '***' or line.strip() == '---' or line.strip() == ''):
+                    if line.strip() in ('***', '---'):
+                        skip_next = False
+                    continue
+                skip_next = False
+                cleaned_lines.append(line)
+
+            story = '\n'.join(cleaned_lines).strip()
+            return story
+        except (KeyError, IndexError) as e:
+            # Create detailed error message for user
+            error_details = f"Parsing Error: {e!s}\n\n"
+            error_details += "API Response Keys: " + str(list(result.keys())) + "\n\n"
+
+            if "candidates" in result:
+                error_details += f"Candidates count: {len(result.get('candidates', []))}\n"
+                if result.get('candidates'):
+                    candidate = result['candidates'][0]
+                    error_details += f"Candidate keys: {list(candidate.keys())}\n"
+                    if 'content' in candidate:
+                        error_details += f"Content keys: {list(candidate['content'].keys())}\n"
+
+            # Also write to a log file for debugging
+            log_path = os.path.expanduser("~/Library/Application Support/Anki2/lexiforge_error.log")
+            with open(log_path, "a") as f:
+                f.write(f"\n=== {datetime.datetime.now()} ===\n")
+                f.write(error_details)
+                f.write("\nFull response:\n")
+                f.write(json.dumps(result, indent=2))
+                f.write("\n")
+
+            return f"❌ Parsing Error\n\n{error_details}\n\nFull log saved to:\n{log_path}"
+
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8")
+        logger.error(f"LexiForge Story HTTP Error {e.code}: {error_body}")
+        return f"API Error: {e.code}\n\n{error_body}"
+    except Exception as e:
+        logger.error(f"LexiForge Story Error: {e}")
+        return f"Error generating story: {e!s}"
