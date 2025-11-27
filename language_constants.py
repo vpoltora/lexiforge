@@ -24,19 +24,20 @@ SUPPORTED_LANGUAGES = {
     "Italian": "it",
     "Tamil": "ta",
     "Thai": "th",
-    "Polish": "pl"
+    "Polish": "pl",
 }
 
 # Get sorted list of language names for UI dropdowns
 LANGUAGE_NAMES = sorted(SUPPORTED_LANGUAGES.keys())
 
-def get_lang_code(language_name):
+
+def get_lang_code(language_name: str) -> str:
     """
     Get the ISO language code for a given language name.
-    
+
     Args:
         language_name: Display name of the language (e.g., "English")
-    
+
     Returns:
         ISO language code (e.g., "en"), defaults to "en" if not found
     """
