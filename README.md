@@ -36,7 +36,8 @@ AI-powered vocabulary learning add-on for Anki. Automatically generates definiti
 ### Reading Practice
 1. Study some cards (interval ≥ 1 day)
 2. Go to **Tools → LexiForge Reading Practice**
-3. A story with your studied words will be generated
+3. Select a deck from the dropdown (or "All Decks")
+4. Click **Generate Story** to create a story with your studied words
 
 ## License
 

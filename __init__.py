@@ -1,3 +1,4 @@
+import html
 import json
 import os
 import re
@@ -22,6 +23,7 @@ from aqt.qt import (
     QTextEdit,
     QVBoxLayout,
     QWidget,
+    QGroupBox,
 )
 from aqt.utils import showInfo
 
@@ -582,9 +584,12 @@ def add_editor_button(buttons, editor):
 
 # --- Story Generation from Studied Words ---
 
-def get_studied_words_today() -> list[str]:
+def get_studied_words_today(deck_id: int | None = None) -> list[str]:
     """
     Get words from cards studied today with interval >= 1 day.
+
+    Args:
+        deck_id: Optional deck ID to filter words. If None, get words from all decks.
 
     Returns:
         List of words (from the first field of each card)
@@ -597,16 +602,30 @@ def get_studied_words_today() -> list[str]:
 
     # Query cards reviewed today with interval >= 1 day
     # ivl is in days, so we want ivl >= 1
-    card_ids = mw.col.db.list(
-        """
-        SELECT DISTINCT c.id
-        FROM cards c
-        JOIN revlog r ON c.id = r.cid
-        WHERE r.id >= ?
-        AND c.ivl >= 1
-        """,
-        today_start
-    )
+    if deck_id is not None:
+        card_ids = mw.col.db.list(
+            """
+            SELECT DISTINCT c.id
+            FROM cards c
+            JOIN revlog r ON c.id = r.cid
+            WHERE r.id >= ?
+            AND c.ivl >= 1
+            AND c.did = ?
+            """,
+            today_start,
+            deck_id
+        )
+    else:
+        card_ids = mw.col.db.list(
+            """
+            SELECT DISTINCT c.id
+            FROM cards c
+            JOIN revlog r ON c.id = r.cid
+            WHERE r.id >= ?
+            AND c.ivl >= 1
+            """,
+            today_start
+        )
 
     if not card_ids:
         return []
@@ -621,6 +640,8 @@ def get_studied_words_today() -> list[str]:
             # Remove HTML tags and sound tags
             word = re.sub(r'<[^>]+>', '', word)
             word = re.sub(r'\[sound:[^\]]+\]', '', word)
+            # Decode HTML entities like &nbsp;, &amp;, etc.
+            word = html.unescape(word)
             word = word.strip()
             if word and word not in words:
                 words.append(word)
@@ -639,9 +660,23 @@ class StoryDialog(QDialog):
 
         layout = QVBoxLayout()
 
+        # Deck selection group
+        deck_group = QGroupBox("Select Deck")
+        deck_layout = QHBoxLayout()
+        
+        self.deck_combo = QComboBox()
+        self.deck_combo.currentIndexChanged.connect(self.on_deck_changed)
+        deck_layout.addWidget(self.deck_combo)
+        
+        self.word_count_label = QLabel()
+        deck_layout.addWidget(self.word_count_label)
+        
+        deck_group.setLayout(deck_layout)
+        layout.addWidget(deck_group)
+
         # Info label
-        info_label = QLabel("Generating a story with your studied words...")
-        layout.addWidget(info_label)
+        self.info_label = QLabel("Select a deck to generate a story...")
+        layout.addWidget(self.info_label)
 
         # Story text area
         self.story_text = QTextEdit()
@@ -659,8 +694,13 @@ class StoryDialog(QDialog):
         # Buttons
         button_box = QDialogButtonBox()
 
+        self.generate_btn = QPushButton("Generate Story")
+        self.generate_btn.clicked.connect(self.generate_story)
+        button_box.addButton(self.generate_btn, QDialogButtonBox.ButtonRole.ActionRole)
+
         self.regenerate_btn = QPushButton("Regenerate")
         self.regenerate_btn.clicked.connect(self.regenerate_story)
+        self.regenerate_btn.setEnabled(False)
         button_box.addButton(self.regenerate_btn, QDialogButtonBox.ButtonRole.ActionRole)
 
         close_btn = button_box.addButton(QDialogButtonBox.StandardButton.Close)
@@ -670,9 +710,59 @@ class StoryDialog(QDialog):
 
         self.setLayout(layout)
 
-        # Generate initial story
+        # Initialize state
         self.words: list[str] = []
-        self.generate_story()
+        self.current_story_generated = False
+        
+        # Load decks
+        self.load_decks()
+
+    def load_decks(self) -> None:
+        """Load all decks with their studied word counts."""
+        if not mw or not mw.col:
+            return
+        
+        self.deck_combo.clear()
+        
+        # Add "All Decks" option
+        all_words = get_studied_words_today()
+        self.deck_combo.addItem(f"All Decks ({len(all_words)} words)", None)
+        
+        # Add individual decks
+        deck_list = mw.col.decks.all_names_and_ids()
+        for deck in deck_list:
+            deck_id = deck.id
+            deck_name = deck.name
+            words = get_studied_words_today(deck_id)
+            word_count = len(words)
+            
+            # Add deck to combo with word count
+            self.deck_combo.addItem(f"{deck_name} ({word_count} words)", deck_id)
+        
+        # Update word count label for initial selection
+        self.on_deck_changed(0)
+
+    def on_deck_changed(self, index: int) -> None:
+        """Handle deck selection change."""
+        if index < 0:
+            return
+        
+        deck_id = self.deck_combo.itemData(index)
+        words = get_studied_words_today(deck_id)
+        
+        self.word_count_label.setText(f"📚 {len(words)} word(s)")
+        
+        if len(words) == 0:
+            self.info_label.setText("⚠️ No studied words found in this deck (interval ≥ 1 day)")
+            self.generate_btn.setEnabled(False)
+            self.story_text.clear()
+        else:
+            self.info_label.setText("Ready to generate a story with your studied words!")
+            self.generate_btn.setEnabled(True)
+        
+        # Reset regenerate button when deck changes
+        self.regenerate_btn.setEnabled(False)
+        self.current_story_generated = False
 
     def generate_story(self) -> None:
         """Generate and display the story."""
@@ -683,16 +773,22 @@ class StoryDialog(QDialog):
             self.story_text.setText("Please configure your API Key in Tools → LexiForge Settings")
             return
 
-        # Get studied words
-        self.words = get_studied_words_today()
+        # Get selected deck
+        current_index = self.deck_combo.currentIndex()
+        deck_id = self.deck_combo.itemData(current_index)
+        
+        # Get studied words from selected deck
+        self.words = get_studied_words_today(deck_id)
 
         if not self.words:
             self.story_text.setText("No words found. Study some cards first!\n\nMake sure you have cards with interval ≥ 1 day that were reviewed today.")  # noqa: E501
             self.regenerate_btn.setEnabled(False)
             return
 
-        self.story_text.setText(f"📚 Using {len(self.words)} words: {', '.join(self.words[:10])}{'...' if len(self.words) > 10 else ''}\n\nGenerating story...")  # noqa: E501
+        deck_name = self.deck_combo.currentText()
+        self.story_text.setText(f"📚 Using {len(self.words)} words from {deck_name}\n\nWords: {', '.join(self.words[:10])}{'...' if len(self.words) > 10 else ''}\n\nGenerating story...")  # noqa: E501
 
+        self.generate_btn.setEnabled(False)
         self.regenerate_btn.setEnabled(False)
 
         # Generate story in background
@@ -715,10 +811,13 @@ class StoryDialog(QDialog):
                 # Convert newlines to HTML breaks
                 story_html = story_html.replace('\n', '<br>')
                 self.story_text.setHtml(story_html)
+                self.generate_btn.setEnabled(True)
                 self.regenerate_btn.setEnabled(True)
+                self.current_story_generated = True
             except Exception as e:
                 self.story_text.setText(f"Error: {e!s}")
-                self.regenerate_btn.setEnabled(True)
+                self.generate_btn.setEnabled(True)
+                self.regenerate_btn.setEnabled(False)
 
         from concurrent.futures import ThreadPoolExecutor
         executor = ThreadPoolExecutor(max_workers=1)

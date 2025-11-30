@@ -45,6 +45,8 @@ meta.json
 *.gif
 *.mp4
 *.webm
+# Build artifacts
+build_temp/
 
 test_audio_samples/
 
