@@ -42,9 +42,10 @@ meta.json
 # Ignore packaged addon files
 *.ankiaddon
 # Ignore generated screenshots or recordings if any
-*.gif
 *.mp4
 *.webm
+# Build artifacts
+build_temp/
 
 test_audio_samples/
 
