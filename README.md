@@ -8,7 +8,12 @@ AI-powered vocabulary learning add-on for Anki. Automatically generates definiti
 - **Contextual definitions**: Translations or explanations based on word complexity
 - **Example sentences**: Generates authentic examples in target language
 - **Audio pronunciation**: TTS for 20+ languages
+
+![media/gen.gif]
+
 - **Reading practice**: Creates stories using your studied words (adjustable CEFR levels A1-C2)
+
+![media/read.gif]
 
 **Supported languages:** English, Spanish, French, German, Italian, Portuguese, Russian, Chinese, Japanese, Korean, Arabic, Hindi, Bengali, Urdu, Indonesian, Vietnamese, Turkish, Thai, Tamil, Polish
 
