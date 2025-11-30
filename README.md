@@ -8,14 +8,19 @@ AI-powered vocabulary learning add-on for Anki. Automatically generates definiti
 - **Contextual definitions**: Translations or explanations based on word complexity
 - **Example sentences**: Generates authentic examples in target language
 - **Audio pronunciation**: TTS for 20+ languages
+
+![generation cards](https://github.com/vpoltora/lexiforge/blob/master/media/gen.gif)
+
 - **Reading practice**: Creates stories using your studied words (adjustable CEFR levels A1-C2)
+
+![reading practice](https://github.com/vpoltora/lexiforge/blob/master/media/read.gif)
 
 **Supported languages:** English, Spanish, French, German, Italian, Portuguese, Russian, Chinese, Japanese, Korean, Arabic, Hindi, Bengali, Urdu, Indonesian, Vietnamese, Turkish, Thai, Tamil, Polish
 
 ## Installation
 
 1. Open Anki → **Tools → Add-ons → Get Add-ons...**
-2. Enter code: `[TO_BE_ADDED]`
+2. Enter code: `1830356451`
 3. Restart Anki
 
 ## Setup
@@ -43,3 +48,4 @@ AI-powered vocabulary learning add-on for Anki. Automatically generates definiti
 MIT License - see [LICENSE](LICENSE)
 
 Created by [poltora.dev](https://github.com/vpoltora)
+
