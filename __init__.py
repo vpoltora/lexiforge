@@ -4,7 +4,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Optional
 
 from anki.hooks import addHook
 from aqt import mw
@@ -48,7 +48,7 @@ if TYPE_CHECKING:
 ADDON_NAME = "LexiForge"
 ICON_NAME = "lexiforge_icon.svg"
 CONFIG_FILENAME = "config.json"
-_CONFIG_CACHE: dict[str, Any] | None = None
+_CONFIG_CACHE: Optional[dict[str, Any]] = None
 
 
 def get_config_path() -> str:
@@ -95,7 +95,7 @@ def save_config(config: dict[str, Any]) -> None:
 # --- GUI ---
 
 class SettingsDialog(QDialog):
-    def __init__(self, parent: QDialog | None = None) -> None:
+    def __init__(self, parent: Optional[QDialog] = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("LexiForge Settings")
         # Make sure the dialog appears on top
@@ -424,8 +424,8 @@ def get_field_mapping(note: "Note", config: dict[str, Any]) -> tuple[str, str, s
 
 
 def _validate_note_and_config(
-    note: "Note | None",
-    conf: dict[str, Any] | None,
+    note: Optional["Note"],
+    conf: Optional[dict[str, Any]],
     word_field: str,
     def_field: str,
     ex_field: str,
@@ -584,7 +584,7 @@ def add_editor_button(buttons, editor):
 
 # --- Story Generation from Studied Words ---
 
-def get_studied_words_today(deck_id: int | None = None) -> list[str]:
+def get_studied_words_today(deck_id: Optional[int] = None) -> list[str]:
     """
     Get words from cards studied today with interval >= 1 day.
 
@@ -652,7 +652,7 @@ def get_studied_words_today(deck_id: int | None = None) -> list[str]:
 class StoryDialog(QDialog):
     """Dialog to display generated story from studied words."""
 
-    def __init__(self, parent: QDialog | None = None) -> None:
+    def __init__(self, parent: Optional[QDialog] = None) -> None:
         super().__init__(parent)
         self.setWindowTitle(f"{ADDON_NAME} - Reading Practice")
         self.setMinimumSize(600, 500)
